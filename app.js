@@ -219,7 +219,7 @@
   }
 
   // ---------- stato e aggregazione ----------
-  var state = { dates: [], results: [], frames: {}, ids: [], sel: 0, mode: 'mean', A: null, loading: false, last: null };
+  var state = { hourly: [], dates: [], results: [], frames: {}, ids: [], sel: 0, mode: 'mean', A: null, loading: false, last: null };
 
   function val(id, d, v) {
     var r = state.frames[id] && state.frames[id][state.dates[d]];
@@ -357,8 +357,161 @@
       return;
     }
     state.A = aggregate(state.ids);
-    renderDays(state.A); renderChart(state.A); renderTable(state.A); renderSources(state.A);
+    renderDays(state.A); renderChart(state.A); renderTable(state.A); renderSources(state.A); renderRain();
     void okc;
+  }
+
+  // ---------- orari di pioggia, temporale e grandine ----------
+  var HMODELS = [
+    { id: 'ecmwf', model: 'ecmwf_ifs025' },
+    { id: 'icon', model: 'icon_seamless' },
+    { id: 'gfs', model: 'gfs_seamless' },
+    { id: 'arpege', model: 'meteofrance_seamless' }
+  ];
+
+  function openMeteoHourly(model) {
+    var q = 'latitude=' + LAT + '&longitude=' + LON + '&hourly=precipitation,precipitation_probability,weather_code,cape' +
+      '&models=' + model + '&timezone=Europe%2FRome&forecast_days=' + NDAYS;
+    return getJson('https://api.open-meteo.com/v1/forecast?' + q).then(function (j) {
+      var h = j.hourly, out = {}, i;
+      for (i = 0; i < h.time.length; i++) {
+        var d = h.time[i].slice(0, 10), hr = Number(h.time[i].slice(11, 13));
+        if (!out[d]) out[d] = [];
+        out[d][hr] = {
+          mm: num(h.precipitation && h.precipitation[i]),
+          pr: num(h.precipitation_probability && h.precipitation_probability[i]),
+          code: num(h.weather_code && h.weather_code[i]),
+          cape: num(h.cape && h.cape[i])
+        };
+      }
+      return out;
+    });
+  }
+
+  function loadHourly(m, force) {
+    var key = 'meteo.h.' + m.id, c = null, now = Date.now();
+    try { c = JSON.parse(lsGet(key) || 'null'); } catch (e) { c = null; }
+    if (c && !force && now - c.t < TTL) return Promise.resolve({ id: m.id, data: c.data });
+    return openMeteoHourly(m.model).then(function (data) {
+      lsSet(key, JSON.stringify({ t: now, data: data }));
+      return { id: m.id, data: data };
+    }).catch(function () {
+      return c ? { id: m.id, data: c.data, stale: true } : { id: m.id, data: null };
+    });
+  }
+
+  function loadAllHourly(force) {
+    return Promise.all(HMODELS.map(function (m) { return loadHourly(m, force); })).then(function (r) {
+      return r.filter(function (x) { return x.data; });
+    });
+  }
+
+  function nowHour() {
+    return Number(new Intl.DateTimeFormat('en-GB', { hour: '2-digit', hourCycle: 'h23', timeZone: TZ }).format(new Date()));
+  }
+
+  function hourCons(date, hr) {
+    var mms = [], prs = [], wetN = 0, n = 0, storm = 0, hail = 0, cape = NaN;
+    state.hourly.forEach(function (m) {
+      var day = m.data && m.data[date], e = day && day[hr];
+      if (!e) return;
+      var mm = num(e.mm), pr = num(e.pr), code = num(e.code), cp = num(e.cape);
+      if (ok(mm)) { mms.push(mm); n++; if (mm >= 0.1) wetN++; }
+      if (ok(pr)) prs.push(pr);
+      if (code === 95 || code === 96 || code === 99) storm++;
+      if (code === 96 || code === 99) hail++;
+      if (ok(cp) && (!ok(cape) || cp > cape)) cape = cp;
+    });
+    var mm2 = mms.length ? MEAN(mms) : NaN;
+    var pr2 = prs.length ? MEAN(prs) : (n ? 100 * wetN / n : NaN);
+    return { mm: mm2, pr: pr2, wet: n > 0 && (mm2 >= 0.2 || wetN / n >= 0.5), storm: storm, hail: hail, cape: cape, n: n };
+  }
+
+  function dayHours(i) {
+    var out = [], hr, nh = i === 0 ? nowHour() : 0;
+    for (hr = 0; hr < 24; hr++) {
+      var c = hourCons(state.dates[i], hr);
+      c.past = hr < nh;
+      out.push(c);
+    }
+    return out;
+  }
+
+  function windows(hours, test, key) {
+    var ws = [], cur = null;
+    hours.forEach(function (h, i) {
+      if (h.past || !test(h)) return;
+      if (cur && i - cur.last <= 2) { cur.last = i; cur.idx.push(i); }
+      else { cur = { first: i, last: i, idx: [i] }; ws.push(cur); }
+    });
+    return ws.map(function (x) {
+      var hs = x.idx.map(function (i) { return hours[i]; });
+      return {
+        from: x.first, to: x.last + 1,
+        pr: red(hs.map(function (h) { return h.pr; }), MAX),
+        mm: red(hs.map(function (h) { return h.mm; }), SUM),
+        n: key ? MAX(hs.map(function (h) { return h[key]; })) : 0
+      };
+    });
+  }
+
+  function hh(h) { return (h < 10 ? '0' : '') + h + ':00'; }
+
+  function renderRainChart(hs) {
+    var W = 720, H = 230, L = 42, R = 40, T = 30, B = 28, bw = (W - L - R) / 24, i, s;
+    var mx = 2;
+    hs.forEach(function (h) { if (ok(h.mm) && h.mm > mx) mx = h.mm; });
+    mx = Math.ceil(mx);
+    function Y(mm) { return T + (H - T - B) * (1 - mm / mx); }
+    function YP(p) { return T + (H - T - B) * (1 - p / 100); }
+    s = '<svg viewBox="0 0 ' + W + ' ' + H + '" role="img" aria-label="Pioggia ora per ora">';
+    [0, 0.5, 1].forEach(function (k) {
+      var y = T + (H - T - B) * (1 - k);
+      s += '<line class="gl" x1="' + L + '" x2="' + (W - R) + '" y1="' + y + '" y2="' + y + '"/>' +
+        '<text class="ax" x="' + (L - 6) + '" y="' + (y + 4) + '" text-anchor="end">' + (mx * k).toFixed(k === 0.5 && mx % 2 ? 1 : 0).replace('.', ',') + '</text>' +
+        '<text class="ax" x="' + (W - R + 6) + '" y="' + (y + 4) + '">' + (k * 100) + '%</text>';
+    });
+    s += '<text class="ax" x="' + L + '" y="' + (T - 18) + '">mm</text>';
+    var pts = [];
+    for (i = 0; i < 24; i++) {
+      var h = hs[i], x = L + i * bw, op = h.past ? 0.3 : 1;
+      if (ok(h.mm) && h.mm > 0) {
+        s += '<rect x="' + (x + 2) + '" y="' + Y(h.mm) + '" width="' + (bw - 4) + '" height="' + Math.max(1.5, Y(0) - Y(h.mm)) + '" rx="2" fill="var(--rain)" fill-opacity="' + (0.85 * op) + '"/>';
+      }
+      if (h.storm > 0) s += '<rect x="' + (x + 2) + '" y="' + (T - 14) + '" width="' + (bw - 4) + '" height="8" rx="2" fill="var(--warn)" fill-opacity="' + op + '"/>';
+      if (h.hail > 0) s += '<circle cx="' + (x + bw / 2) + '" cy="' + (T - 10) + '" r="5" fill="var(--bad)" stroke="var(--surface)" stroke-width="2"/>';
+      if (ok(h.pr)) pts.push((x + bw / 2) + ',' + YP(h.pr));
+      if (i % 3 === 0) s += '<text class="ax" x="' + (x + bw / 2) + '" y="' + (H - 10) + '" text-anchor="middle">' + i + '</text>';
+    }
+    if (pts.length) s += '<polyline points="' + pts.join(' ') + '" fill="none" stroke="var(--ink)" stroke-width="1.5" stroke-dasharray="4 3"/>';
+    chart_set(s + '</svg>');
+  }
+  function chart_set(svg) { $('rainchart').innerHTML = svg; }
+
+  function renderRain() {
+    var list = $('rainlist'), chart = $('rainchart');
+    if (!state.hourly || !state.hourly.length) {
+      list.innerHTML = '<div class="empty">' + (state.loading ? 'Caricamento...' : 'Orari non disponibili. Premi Aggiorna per riprovare.') + '</div>';
+      chart.innerHTML = '';
+      return;
+    }
+    var N = state.hourly.length, html = '', selHours = null, i;
+    for (i = 0; i < NDAYS; i++) {
+      var hs = dayHours(i), t = toDate(state.dates[i]), parts = '';
+      if (i === state.sel) selHours = hs;
+      var wet = windows(hs, function (x) { return x.wet; });
+      var st = windows(hs, function (x) { return x.storm > 0; }, 'storm');
+      var ha = windows(hs, function (x) { return x.hail > 0; }, 'hail');
+      if (!wet.length && !st.length) parts = '<span class="pill ok">Nessuna pioggia prevista</span>';
+      wet.forEach(function (w) { parts += '<span class="pill rainp">Pioggia ' + hh(w.from) + '–' + hh(w.to) + ' · fino a ' + f(w.pr, 0) + '% · ' + f(w.mm) + ' mm</span>'; });
+      st.forEach(function (w) { parts += '<span class="pill warn">Temporale ' + hh(w.from) + '–' + hh(w.to) + ' · ' + w.n + (w.n === 1 ? ' modello' : ' modelli') + ' su ' + N + '</span>'; });
+      ha.forEach(function (w) { parts += '<span class="pill bad">Grandine possibile ' + hh(w.from) + '–' + hh(w.to) + ' · ' + w.n + (w.n === 1 ? ' modello' : ' modelli') + ' su ' + N + '</span>'; });
+      html += '<div class="rl' + (i === state.sel ? ' sel' : '') + '" data-d="' + i + '"><div class="rd"><b>' + fmtWd(t) + '</b> ' + fmtDm(t) + '</div><div class="rp">' + parts + '</div></div>';
+    }
+    list.innerHTML = html;
+    var ts = toDate(state.dates[state.sel]);
+    renderRainChart(selHours);
+    chart.insertAdjacentHTML('afterbegin', '<p class="sub">Ora per ora · ' + fmtWd(ts) + ' ' + fmtDm(ts) + '</p>');
   }
 
   function refresh(force) {
@@ -379,6 +532,7 @@
       state.loading = false;
       $('refresh').disabled = false;
       render();
+      loadAllHourly(force).then(function (h) { state.hourly = h; renderRain(); });
     });
   }
 
@@ -391,6 +545,7 @@
   $('days').addEventListener('click', setSel);
   $('chart').addEventListener('click', setSel);
   $('tbl').addEventListener('click', setSel);
+  $('rainlist').addEventListener('click', setSel);
   $('refresh').addEventListener('click', function () { refresh(true); });
   function setMode(m) {
     state.mode = m;
