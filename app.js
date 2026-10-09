@@ -1,6 +1,16 @@
 (function () {
   'use strict';
 
+  var VERSION = '3';
+  window.addEventListener('error', function (e) {
+    var l = document.getElementById('lead');
+    if (l) l.textContent = 'Errore: ' + (e.message || 'sconosciuto') + ' (versione ' + VERSION + ')';
+  });
+  window.addEventListener('unhandledrejection', function (e) {
+    var l = document.getElementById('lead');
+    if (l) l.textContent = 'Errore: ' + ((e.reason && e.reason.message) || 'sconosciuto') + ' (versione ' + VERSION + ')';
+  });
+
   var LAT = 45.9003, LON = 12.17, TZ = 'Europe/Rome';
   var NDAYS = 7, TTL = 30 * 60 * 1000, TIMEOUT = 10000, RETRIES = 2;
   var NATIVE = !!(window.Capacitor && typeof window.Capacitor.isNativePlatform === 'function' && window.Capacitor.isNativePlatform());
@@ -219,7 +229,7 @@
   }
 
   // ---------- stato e aggregazione ----------
-  var state = { hourly: [], dates: [], results: [], frames: {}, ids: [], sel: 0, mode: 'mean', A: null, loading: false, last: null };
+  var state = { hourly: [], hourlyDone: false, done: 0, dates: [], results: [], frames: {}, ids: [], sel: 0, mode: 'mean', A: null, loading: false, last: null };
 
   function val(id, d, v) {
     var r = state.frames[id] && state.frames[id][state.dates[d]];
@@ -263,7 +273,8 @@
   function f(x, nd) { return ok(x) ? x.toFixed(nd === undefined ? 1 : nd).replace('.', ',') : 'n/d'; }
   function cls(a) { return !ok(a) ? 'off' : a >= 85 ? 'ok' : a >= 65 ? 'warn' : 'bad'; }
   function lab(a) { return !ok(a) ? 'n/d' : a >= 85 ? 'Alto' : a >= 65 ? 'Medio' : 'Basso'; }
-  function $(id) { return document.getElementById(id); }
+  var SINK = document.createElement('div');
+  function $(id) { return document.getElementById(id) || SINK; }
 
   function renderDays(A) {
     var h = '';
@@ -344,7 +355,7 @@
     state.ids = state.results.filter(function (r) { return r.rows.length; }).map(function (r) { return r.src.id; });
     var okc = state.results.filter(function (r) { return r.status === 'ok'; }).length;
     var stale = state.results.filter(function (r) { return r.status === 'stale'; }).length;
-    if (state.loading) { $('lead').textContent = 'Aggiorno le fonti...'; }
+    if (state.loading) { $('lead').textContent = 'Aggiorno le fonti (' + state.done + ' di ' + SOURCES.length + ')...'; }
     else if (!state.ids.length) { $('lead').textContent = 'Nessuna fonte raggiungibile. Controlla la connessione.'; }
     else {
       var hh = state.last ? new Intl.DateTimeFormat('it-IT', { hour: '2-digit', minute: '2-digit', timeZone: TZ }).format(state.last) : '';
@@ -491,7 +502,7 @@
   function renderRain() {
     var list = $('rainlist'), chart = $('rainchart');
     if (!state.hourly || !state.hourly.length) {
-      list.innerHTML = '<div class="empty">' + (state.loading ? 'Caricamento...' : 'Orari non disponibili. Premi Aggiorna per riprovare.') + '</div>';
+      list.innerHTML = '<div class="empty">' + (!state.hourlyDone ? 'Carico gli orari...' : 'Orari non disponibili. Premi Aggiorna per riprovare.') + '</div>';
       chart.innerHTML = '';
       return;
     }
@@ -517,23 +528,37 @@
   function refresh(force) {
     if (state.loading) return;
     state.loading = true;
+    state.done = 0;
+    state.results = [];
+    state.frames = {};
+    state.hourlyDone = false;
     $('refresh').disabled = true;
     state.dates = windowDates();
-    render();
-    Promise.all(SOURCES.map(function (s) { return load(s, force); })).then(function (res) {
-      state.results = res;
-      state.frames = {};
-      res.forEach(function (r) {
+    safeRender();
+    SOURCES.forEach(function (s, idx) {
+      load(s, force).then(function (r) {
+        r.order = idx;
+        state.results.push(r);
+        state.results.sort(function (a, b) { return a.order - b.order; });
         var m = {};
         r.rows.forEach(function (x) { m[x.date] = x; });
         state.frames[r.src.id] = m;
+        state.done++;
+        state.last = new Date();
+        if (state.done >= SOURCES.length) { state.loading = false; $('refresh').disabled = false; }
+        safeRender();
       });
-      state.last = new Date();
-      state.loading = false;
-      $('refresh').disabled = false;
-      render();
-      loadAllHourly(force).then(function (h) { state.hourly = h; renderRain(); });
     });
+    loadAllHourly(force).then(function (h) {
+      state.hourly = h; state.hourlyDone = true; safeRender();
+    });
+  }
+
+  function safeRender() {
+    try { render(); } catch (e) {
+      $('lead').textContent = 'Errore: ' + e.message + ' (versione ' + VERSION + ')';
+      state.loading = false; $('refresh').disabled = false;
+    }
   }
 
   function setSel(e) {
@@ -575,6 +600,8 @@
     navigator.serviceWorker.register('sw.js').catch(function () { /* facoltativo */ });
   }
 
+  var ft = document.querySelector('.foot');
+  if (ft) ft.textContent += ' Versione app ' + VERSION + '.';
   state.dates = windowDates();
   refresh(false);
 })();
