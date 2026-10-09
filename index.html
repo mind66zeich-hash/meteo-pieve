@@ -1,0 +1,69 @@
+<!doctype html>
+<html lang="it">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Meteo Pieve</title>
+<meta name="theme-color" content="#17705d">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icon-192.png">
+<link rel="apple-touch-icon" href="icon-192.png">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<main class="wrap">
+  <header>
+    <div>
+      <p class="eyebrow">45.9003 N · 12.1700 E</p>
+      <h1>Meteo Pieve di Soligo</h1>
+      <p class="lead" id="lead">Carico le fonti...</p>
+    </div>
+    <button type="button" class="btn" id="refresh">Aggiorna</button>
+  </header>
+
+  <section class="days" id="days" aria-label="Prossimi 7 giorni"></section>
+
+  <section class="panel">
+    <h2>Temperature e spread tra fonti</h2>
+    <div id="chart"></div>
+    <p class="legend">
+      <span><i style="background:var(--tmax)"></i>Tmax</span>
+      <span><i style="background:var(--tmin)"></i>Tmin</span>
+      <span>Barra: intervallo tra fonti</span>
+      <span>Punto: consenso</span>
+    </p>
+  </section>
+
+  <section class="panel">
+    <div class="rowhead">
+      <h2>Previsione di consenso</h2>
+      <div class="seg" role="group" aria-label="Valore di consenso">
+        <button type="button" id="m-mean" aria-pressed="true">Media pesata</button>
+        <button type="button" id="m-med" aria-pressed="false">Mediana</button>
+      </div>
+    </div>
+    <div class="scroll"><table id="tbl"></table></div>
+  </section>
+
+  <section class="panel">
+    <h2 id="srch">Dettaglio fonti</h2>
+    <div id="srcs"></div>
+  </section>
+
+  <details class="panel" id="settings">
+    <summary>Chiavi API (facoltative)</summary>
+    <p class="note">Le sei fonti senza chiave funzionano subito. Con una chiave si aggiungono altre fonti. Le chiavi restano salvate solo su questo telefono.</p>
+    <form id="keys" autocomplete="off">
+      <label for="k-owm">OpenWeatherMap</label><input id="k-owm" type="password" autocomplete="off" spellcheck="false">
+      <label for="k-wapi">WeatherAPI</label><input id="k-wapi" type="password" autocomplete="off" spellcheck="false">
+      <label for="k-vc">Visual Crossing</label><input id="k-vc" type="password" autocomplete="off" spellcheck="false">
+      <label for="k-tio">Tomorrow.io</label><input id="k-tio" type="password" autocomplete="off" spellcheck="false">
+      <div class="actions"><button type="submit" class="btn">Salva e aggiorna</button></div>
+    </form>
+  </details>
+
+  <p class="foot">Dati da fonti meteo pubbliche. Il consenso è la media pesata tra le fonti: più una fonte si discosta dalla mediana, meno pesa.</p>
+</main>
+<script src="app.js"></script>
+</body>
+</html>
